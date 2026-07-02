@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign In — Inventory Comparison Tool</title>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import {
+    getAuth, onAuthStateChanged, signInWithEmailAndPassword,
+    createUserWithEmailAndPassword, sendEmailVerification, signOut,
+    sendPasswordResetEmail
+  } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDiH6qJuT8GiZv0nhd-LNiLfvv0o73py7w",
+    authDomain: "inventory-tool-292be.firebaseapp.com",
+    projectId: "inventory-tool-292be",
+    storageBucket: "inventory-tool-292be.firebasestorage.app",
+    messagingSenderId: "1093604119984",
+    appId: "1:1093604119984:web:2570c06a89d212fceef275"
+  };
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+
+  const REDIRECT_TO = "Inventory_Comparison_EN.html";
+
+  // If already signed in AND verified, skip the form entirely.
+  onAuthStateChanged(auth, (user) => {
+    if (user && user.emailVerified) window.location.href = REDIRECT_TO;
+  });
+
+  let mode = "signin"; // or "signup"
+  let pendingUnverifiedUser = null; // set when a signin attempt hits an unverified account
+
+  function friendlyError(e) {
+    switch (e.code) {
+      case "auth/invalid-credential":
+      case "auth/wrong-password":
+      case "auth/user-not-found":
+        return "Incorrect email or password";
+      case "auth/user-disabled":
+        return "This account has been disabled by the admin";
+      case "auth/email-already-in-use":
+        return "An account with this email already exists — try signing in instead";
+      case "auth/weak-password":
+        return "Password must be at least 6 characters";
+      case "auth/invalid-email":
+        return "Please enter a valid email address";
+      case "auth/too-many-requests":
+        return "Too many attempts — please wait a bit and try again";
+      default:
+        return "Error: " + e.message;
+    }
+  }
+
+  function showMsg(text, isError) {
+    const el = document.getElementById("err");
+    el.textContent = text;
+    el.style.color = isError ? "#e74c3c" : "#1a8f5c";
+  }
+
+  function showResend(show) {
+    document.getElementById("resend").style.display = show ? "block" : "none";
+  }
+
+  window.doSubmit = async function () {
+    const email = document.getElementById("email").value.trim();
+    const pass = document.getElementById("pass").value;
+    const btn = document.getElementById("btn");
+    showMsg("", false);
+    showResend(false);
+    pendingUnverifiedUser = null;
+    if (!email || !pass) { showMsg("Please enter your email and password", true); return; }
+    if (mode === "signup" && pass.length < 6) { showMsg("Password must be at least 6 characters", true); return; }
+
+    btn.disabled = true;
+    btn.textContent = mode === "signin" ? "Signing in..." : "Creating account...";
+    try {
+      if (mode === "signin") {
+        const cred = await signInWithEmailAndPassword(auth, email, pass);
+        if (!cred.user.emailVerified) {
+          pendingUnverifiedUser = cred.user;
+          await signOut(auth); // don't let an unverified session persist
+          showMsg("Please verify your email first — check your inbox for the link we sent you.", true);
+          showResend(true);
+          btn.disabled = false; btn.textContent = "Sign In";
+          return;
+        }
+        window.location.href = REDIRECT_TO;
+      } else {
+        const cred = await createUserWithEmailAndPassword(auth, email, pass);
+        await sendEmailVerification(cred.user);
+        await signOut(auth);
+        showMsg("Account created! Check your email and click the verification link, then sign in.", false);
+        window.setMode("signin");
+        btn.disabled = false; btn.textContent = "Sign In";
+      }
+    } catch (e) {
+      showMsg(friendlyError(e), true);
+      btn.disabled = false;
+      btn.textContent = mode === "signin" ? "Sign In" : "Create Account";
+    }
+  };
+
+  window.doResend = async function () {
+    const email = document.getElementById("email").value.trim();
+    const pass = document.getElementById("pass").value;
+    const resendBtn = document.getElementById("resend");
+    try {
+      // Need a fresh sign-in to get a user object we can send the email for.
+      const cred = pendingUnverifiedUser
+        ? { user: pendingUnverifiedUser }
+        : await signInWithEmailAndPassword(auth, email, pass);
+      await sendEmailVerification(cred.user);
+      await signOut(auth);
+      showMsg("Verification email re-sent — please check your inbox.", false);
+      resendBtn.textContent = "Sent ✓";
+      setTimeout(() => { resendBtn.textContent = "Resend verification email"; }, 4000);
+    } catch (e) {
+      showMsg(friendlyError(e), true);
+    }
+  };
+
+  window.doForgotPassword = async function () {
+    const email = document.getElementById("email").value.trim();
+    if (!email) { showMsg("Type your email above first, then click 'Forgot password?'", true); return; }
+    try {
+      await sendPasswordResetEmail(auth, email);
+      showMsg("Password reset email sent — check your inbox (and spam folder).", false);
+    } catch (e) {
+      showMsg(friendlyError(e), true);
+    }
+  };
+
+  window.setMode = function (m) {
+    mode = m;
+    showMsg("", false);
+    showResend(false);
+    const isSignin = mode === "signin";
+    document.getElementById("btn").textContent = isSignin ? "Sign In" : "Create Account";
+    document.getElementById("title").textContent = isSignin ? "Sign In" : "Create Account";
+    document.getElementById("subtitle").textContent = isSignin
+      ? "Sign in to continue"
+      : "Create an account — you'll need to verify your email before you can sign in";
+    document.getElementById("tab-signin").classList.toggle("active", isSignin);
+    document.getElementById("tab-signup").classList.toggle("active", !isSignin);
+  };
+
+  window.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("pass").addEventListener("keydown", (e) => { if (e.key === "Enter") window.doSubmit(); });
+    document.getElementById("email").addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("pass").focus(); });
+  });
+</script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,Tahoma,sans-serif;background:linear-gradient(135deg,#1F4E79,#2E75B6);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .login-box{background:#fff;border-radius:16px;padding:32px;width:100%;max-width:360px;box-shadow:0 10px 40px rgba(0,0,0,.25);text-align:center}
+  .login-box .ico{font-size:36px;margin-bottom:6px}
+  .login-box h1{font-size:18px;color:#1F4E79;margin-bottom:4px}
+  .login-box p{font-size:12px;color:#888;margin-bottom:18px}
+  .tabs{display:flex;background:#f0f4f8;border-radius:8px;padding:4px;margin-bottom:18px}
+  .tabs button{flex:1;border:none;background:transparent;padding:8px;border-radius:6px;font-size:13px;font-weight:600;color:#888;cursor:pointer;font-family:inherit}
+  .tabs button.active{background:#1F4E79;color:#fff}
+  .login-box input{width:100%;padding:11px 14px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:12px;font-family:inherit}
+  .login-box input:focus{border-color:#2E75B6;outline:none}
+  .login-box button#btn{width:100%;background:#1F4E79;color:#fff;border:none;border-radius:8px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+  .login-box button#btn:hover{background:#2E75B6}
+  .login-box button#btn:disabled{opacity:.5;cursor:not-allowed}
+  .login-err{font-size:12px;margin-top:10px;min-height:14px}
+  #resend{display:none;width:100%;margin-top:8px;background:transparent;border:1.5px solid #1F4E79;color:#1F4E79;border-radius:8px;padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+  #resend:hover{background:#f0f7ff}
+</style>
+</head>
+<body>
+  <div class="login-box">
+    <div class="ico">📦</div>
+    <h1 id="title">Sign In</h1>
+    <p id="subtitle">Sign in to continue</p>
+    <div class="tabs">
+      <button id="tab-signin" class="active" onclick="setMode('signin')">Sign In</button>
+      <button id="tab-signup" onclick="setMode('signup')">Create Account</button>
+    </div>
+    <input type="email" id="email" placeholder="Email" autocomplete="username">
+    <input type="password" id="pass" placeholder="Password" autocomplete="current-password">
+    <button id="btn" onclick="doSubmit()">Sign In</button>
+    <button id="resend" onclick="doResend()">Resend verification email</button>
+    <div style="margin-top:10px"><a href="#" onclick="doForgotPassword();return false;" style="font-size:12px;color:#2E75B6;text-decoration:none">Forgot password?</a></div>
+    <div class="login-err" id="err"></div>
+  </div>
+</body>
+</html>
