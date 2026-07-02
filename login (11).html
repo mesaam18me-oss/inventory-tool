@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign In — Inventory Comparison Tool</title>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDiH6qJuT8GiZv0nhd-LNiLfvv0o73py7w",
+    authDomain: "inventory-tool-292be.firebaseapp.com",
+    projectId: "inventory-tool-292be",
+    storageBucket: "inventory-tool-292be.firebasestorage.app",
+    messagingSenderId: "1093604119984",
+    appId: "1:1093604119984:web:2570c06a89d212fceef275"
+  };
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+
+  // Where to send the user after a successful login/signup.
+  const REDIRECT_TO = "Inventory_Comparison_EN.html";
+
+  // If already signed in, skip the form entirely.
+  onAuthStateChanged(auth, (user) => { if (user) window.location.href = REDIRECT_TO; });
+
+  let mode = "signin"; // or "signup"
+
+  function friendlyError(e) {
+    switch (e.code) {
+      case "auth/invalid-credential":
+      case "auth/wrong-password":
+      case "auth/user-not-found":
+        return "Incorrect email or password";
+      case "auth/user-disabled":
+        return "This account has been disabled by the admin";
+      case "auth/email-already-in-use":
+        return "An account with this email already exists — try signing in instead";
+      case "auth/weak-password":
+        return "Password must be at least 6 characters";
+      case "auth/invalid-email":
+        return "Please enter a valid email address";
+      default:
+        return "Error: " + e.message;
+    }
+  }
+
+  window.doSubmit = async function () {
+    const email = document.getElementById("email").value.trim();
+    const pass = document.getElementById("pass").value;
+    const errEl = document.getElementById("err");
+    const btn = document.getElementById("btn");
+    errEl.textContent = "";
+    if (!email || !pass) { errEl.textContent = "Please enter your email and password"; return; }
+    if (mode === "signup" && pass.length < 6) { errEl.textContent = "Password must be at least 6 characters"; return; }
+
+    btn.disabled = true;
+    btn.textContent = mode === "signin" ? "Signing in..." : "Creating account...";
+    try {
+      if (mode === "signin") {
+        await signInWithEmailAndPassword(auth, email, pass);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, pass);
+      }
+      window.location.href = REDIRECT_TO;
+    } catch (e) {
+      errEl.textContent = friendlyError(e);
+      btn.disabled = false;
+      btn.textContent = mode === "signin" ? "Sign In" : "Create Account";
+    }
+  };
+
+  window.setMode = function (m) {
+    mode = m;
+    document.getElementById("err").textContent = "";
+    const isSignin = mode === "signin";
+    document.getElementById("btn").textContent = isSignin ? "Sign In" : "Create Account";
+    document.getElementById("title").textContent = isSignin ? "Sign In" : "Create Account";
+    document.getElementById("subtitle").textContent = isSignin
+      ? "Sign in to continue"
+      : "Create an account to get access";
+    document.getElementById("tab-signin").classList.toggle("active", isSignin);
+    document.getElementById("tab-signup").classList.toggle("active", !isSignin);
+  };
+
+  window.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("pass").addEventListener("keydown", (e) => { if (e.key === "Enter") window.doSubmit(); });
+    document.getElementById("email").addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("pass").focus(); });
+  });
+</script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,Tahoma,sans-serif;background:linear-gradient(135deg,#1F4E79,#2E75B6);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .login-box{background:#fff;border-radius:16px;padding:32px;width:100%;max-width:360px;box-shadow:0 10px 40px rgba(0,0,0,.25);text-align:center}
+  .login-box .ico{font-size:36px;margin-bottom:6px}
+  .login-box h1{font-size:18px;color:#1F4E79;margin-bottom:4px}
+  .login-box p{font-size:12px;color:#888;margin-bottom:18px}
+  .tabs{display:flex;background:#f0f4f8;border-radius:8px;padding:4px;margin-bottom:18px}
+  .tabs button{flex:1;border:none;background:transparent;padding:8px;border-radius:6px;font-size:13px;font-weight:600;color:#888;cursor:pointer;font-family:inherit}
+  .tabs button.active{background:#1F4E79;color:#fff}
+  .login-box input{width:100%;padding:11px 14px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:12px;font-family:inherit}
+  .login-box input:focus{border-color:#2E75B6;outline:none}
+  .login-box button#btn{width:100%;background:#1F4E79;color:#fff;border:none;border-radius:8px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+  .login-box button#btn:hover{background:#2E75B6}
+  .login-box button#btn:disabled{opacity:.5;cursor:not-allowed}
+  .login-err{color:#e74c3c;font-size:12px;margin-top:10px;min-height:14px}
+</style>
+</head>
+<body>
+  <div class="login-box">
+    <div class="ico">📦</div>
+    <h1 id="title">Sign In</h1>
+    <p id="subtitle">Sign in to continue</p>
+    <div class="tabs">
+      <button id="tab-signin" class="active" onclick="setMode('signin')">Sign In</button>
+      <button id="tab-signup" onclick="setMode('signup')">Create Account</button>
+    </div>
+    <input type="email" id="email" placeholder="Email" autocomplete="username">
+    <input type="password" id="pass" placeholder="Password" autocomplete="current-password">
+    <button id="btn" onclick="doSubmit()">Sign In</button>
+    <div class="login-err" id="err"></div>
+  </div>
+</body>
+</html>
