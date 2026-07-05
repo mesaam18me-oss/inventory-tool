@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inventory Comparison</title>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  /* TODO: paste your NEW Firebase project's config here (Project settings > Your apps > Web app) */
+  const firebaseConfig = {
+    apiKey: "AIzaSyDiH6qJuT8GiZv0nhd-LNiLfvv0o73py7w",
+    authDomain: "inventory-tool-292be.firebaseapp.com",
+    projectId: "inventory-tool-292be",
+    storageBucket: "inventory-tool-292be.firebasestorage.app",
+    messagingSenderId: "1093604119984",
+    appId: "1:1093604119984:web:2570c06a89d212fceef275"
+  };
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  window.saveHistoryEntry = async function(summary){
+    if(!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    try{
+      await addDoc(collection(db, 'history', uid, 'entries'), { ...summary, createdAt: Date.now() });
+    }catch(e){ console.error('History save failed', e); }
+  };
+
+  window.loadHistoryEntries = async function(){
+    if(!auth.currentUser) return [];
+    const uid = auth.currentUser.uid;
+    try{
+      const q = query(collection(db, 'history', uid, 'entries'), orderBy('createdAt','desc'));
+      const snap = await getDocs(q);
+      const out=[];
+      snap.forEach(d=>out.push({id:d.id, ...d.data()}));
+      return out;
+    }catch(e){ console.error('History load failed', e); return []; }
+  };
+
+  window.deleteHistoryEntry = async function(entryId){
+    if(!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
+    try{
+      await deleteDoc(doc(db, 'history', uid, 'entries', entryId));
+      return true;
+    }catch(e){ console.error('History delete failed', e); return false; }
+  };
+
+  onAuthStateChanged(auth, (user) => {
+    if (!user || !user.emailVerified) {
+      if (user) signOut(auth);
+      window.location.href = "login.html";
+    }
+  });
+
+  // Periodically force-refresh the ID token. If the admin has disabled or
+  // deleted the account in Firebase, this refresh fails and we sign the
+  // user out immediately instead of waiting for the token to expire (~1hr).
+  const STATUS_CHECK_MS = 60 * 1000; // check every 1 minute
+  setInterval(async () => {
+    if (!auth.currentUser) return;
+    try {
+      await auth.currentUser.getIdToken(true); // true = force refresh
+    } catch (e) {
+      await signOut(auth);
+      window.location.href = "login.html";
+    }
+  }, STATUS_CHECK_MS);
+
+  const TIMEOUT_MS = 5 * 60 * 1000;
+  let logoutTimer, warningTimer;
+  function resetAll() {
+    const warn = document.getElementById("timeoutWarning");
+    if (warn) warn.style.display = "none";
+    clearTimeout(logoutTimer); clearTimeout(warningTimer);
+    warningTimer = setTimeout(() => { const w = document.getElementById("timeoutWarning"); if (w) w.style.display = "flex"; }, 4 * 60 * 1000);
+    logoutTimer = setTimeout(async () => { await signOut(auth); window.location.href = "login.html"; }, TIMEOUT_MS);
+  }
+  ["mousemove","keydown","click","scroll","touchstart"].forEach(evt => document.addEventListener(evt, resetAll, true));
+  window.addEventListener("DOMContentLoaded", resetAll);
+  window.doLogout = async function() { await signOut(auth); window.location.href = "login.html"; };
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<style>
+  @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap");
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Inter",Arial,sans-serif;background:#0f0b17;color:#e8e4f0;direction:ltr}
+  header{background:transparent;padding:26px 28px 10px;display:flex;align-items:center;gap:12px}
+  header h1{font-size:22px;font-weight:900;color:#fff;letter-spacing:-.5px}
+  header h1 span{color:#a855f7}
+  header p{font-size:12px;color:#8b7fa3;margin-top:4px}
+  .wrap{max-width:1200px;margin:0 auto;padding:8px 20px 40px}
+
+  .upload-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+  .dropzone{background:#1b1526;border:2px dashed #382b4d;border-radius:14px;padding:24px 18px;text-align:center;transition:.2s;position:relative}
+  .dropzone:hover{border-color:#a855f7;background:#211a2f}
+  .dropzone.ok{border-style:solid;border-color:#a855f7;background:#20142f}
+  .upload-click{position:relative;cursor:pointer}
+  .upload-click input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+  .dropzone .ico{font-size:32px;margin-bottom:8px}
+  .dropzone h3{font-size:14px;font-weight:700;color:#e8e4f0;margin-bottom:4px}
+  .dropzone .sub{font-size:11px;color:#7a6f91}
+  .dropzone .fname{font-size:12px;color:#c084fc;font-weight:700;margin-top:6px;word-break:break-all}
+
+  .map-panel{background:#150f1f;border:1.5px solid #382b4d;border-radius:10px;padding:12px 14px;margin-top:10px;text-align:left;display:none}
+  .map-panel.show{display:block}
+  .map-panel .map-title{font-size:11px;font-weight:700;color:#c084fc;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+  .map-row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .map-row label{font-size:11px;color:#8b7fa3;width:80px;flex-shrink:0;text-align:left}
+  .map-row select{flex:1;padding:5px 8px;border:1px solid #382b4d;border-radius:6px;font-size:12px;font-family:inherit;background:#1b1526;color:#e8e4f0}
+  .map-row select:focus{border-color:#a855f7;outline:none}
+  .map-hint{font-size:10px;color:#655979;margin-top:4px}
+
+  .run-btn{width:100%;background:linear-gradient(135deg,#a855f7,#7c3aed);color:#fff;border:none;border-radius:12px;padding:15px;font-size:16px;font-weight:700;cursor:pointer;margin-bottom:10px;font-family:inherit;transition:.2s;box-shadow:0 4px 20px rgba(168,85,247,.3)}
+  .run-btn:hover{transform:translateY(-1px);box-shadow:0 8px 28px rgba(168,85,247,.45)}
+  .run-btn:disabled{opacity:.35;cursor:not-allowed;transform:none;box-shadow:none}
+  .run-time{text-align:center;font-size:12px;color:#655979;margin-bottom:18px}
+  .run-time b{color:#c084fc}
+
+  .cards{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px}
+  .card{background:#1b1526;border-radius:12px;padding:14px 8px;text-align:center;border-top:3px solid #382b4d}
+  .card.c-total{border-color:#a855f7}.card.c-match{border-color:#22c55e}
+  .card.c-deficit{border-color:#ef4444}.card.c-surplus{border-color:#f59e0b}
+  .card.c-loc{border-color:#c084fc}.card.c-acc{border-color:#a855f7}
+  .card .num{font-size:24px;font-weight:800;color:#fff}
+  .card .lbl{font-size:10px;color:#8b7fa3;margin-top:3px}
+  .card.c-total .num{color:#a855f7}.card.c-match .num{color:#22c55e}
+  .card.c-deficit .num{color:#ef4444}.card.c-surplus .num{color:#f59e0b}
+  .card.c-loc .num{color:#c084fc}.card.c-acc .num{color:#a855f7}
+
+  .notcounted-banner{background:#2b1f0e;border:1.5px solid #b45309;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:13px;color:#fbbf67;font-weight:600;display:none;align-items:center;gap:8px}
+  .notcounted-banner.show{display:flex}
+
+  .tabs{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+  .tab{padding:7px 16px;border-radius:20px;border:1.5px solid #382b4d;background:#1b1526;color:#a99cc2;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;transition:.15s}
+  .tab.on-all{background:#a855f7;color:#fff;border-color:#a855f7}
+  .tab.on-deficit{background:#ef4444;color:#fff;border-color:#ef4444}
+  .tab.on-surplus{background:#f59e0b;color:#0f0b17;border-color:#f59e0b}
+  .tab.on-match{background:#22c55e;color:#0f0b17;border-color:#22c55e}
+  .tab.on-loc{background:#c084fc;color:#0f0b17;border-color:#c084fc}
+  .tab.on-nc{background:#b45309;color:#fff;border-color:#b45309}
+  .tab.on-history{background:#7c3aed;color:#fff;border-color:#7c3aed}
+
+  .toolbar{display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap}
+  .toolbar input{flex:1;min-width:160px;padding:8px 14px;border:1.5px solid #382b4d;border-radius:20px;font-size:13px;font-family:inherit;direction:ltr;outline:none;background:#1b1526;color:#e8e4f0}
+  .toolbar input::placeholder{color:#655979}
+  .toolbar input:focus{border-color:#a855f7}
+  .dl-btn{padding:8px 18px;background:#a855f7;color:#fff;border:none;border-radius:20px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;transition:.15s}
+  .dl-btn:hover{background:#c084fc}
+  .dl-btn-pdf{background:#7c3aed}
+  .dl-btn-pdf:hover{background:#9d5cff}
+
+  .tbl-wrap{background:#1b1526;border-radius:14px;overflow:auto;border:1px solid #2a1f3a}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:800px}
+  thead tr{background:#241933}
+  thead th{padding:12px 10px;text-align:center;font-size:12px;white-space:nowrap;color:#c084fc;font-weight:700}
+  tbody tr:hover{background:#211a2f}
+  tbody td{padding:9px 10px;text-align:center;border-bottom:1px solid #241933;color:#d8d0e6}
+  td.name-col{text-align:left;max-width:220px;word-break:break-word}
+  td.loc-col{text-align:left;max-width:200px;font-size:11px}
+  td.note-col{text-align:left;max-width:260px;font-size:11px}
+
+  .badge{display:inline-block;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700}
+  .b-match  {background:#123522;color:#4ade80}
+  .b-deficit{background:#3a1414;color:#f87171}
+  .b-surplus{background:#3a2a0a;color:#fbbf24}
+
+  .diff-p{color:#4ade80;font-weight:700}
+  .diff-n{color:#f87171;font-weight:700}
+  .diff-z{color:#655979}
+  .note-warn{color:#f87171;font-weight:700}
+
+  .row-match  {background:#10190f}
+  .row-deficit{background:#1c1010}
+  .row-surplus{background:#1c1608}
+  .row-loc    {background:#1c1027}
+
+  .empty{text-align:center;padding:50px 20px;color:#655979}
+  .empty .ico{font-size:40px;margin-bottom:10px}
+  #err{background:#3a1414;color:#f87171;border-radius:8px;padding:12px 16px;margin-bottom:14px;display:none;font-size:13px}
+
+  #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:#a855f7;color:#fff;padding:14px 24px;border-radius:10px;font-size:14px;font-weight:600;box-shadow:0 4px 20px rgba(168,85,247,.4);opacity:0;transition:.3s;z-index:999;max-width:90%;text-align:center}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  @media(max-width:600px){
+    .upload-row{grid-template-columns:1fr}
+    .cards{grid-template-columns:repeat(3,1fr)}
+  }
+
+  /* --- Session timeout banner (matches Putaway tool pattern) --- */
+  #timeoutWarning{display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#f59e0b;color:#1a1206;padding:12px 20px;text-align:center;font-family:inherit;font-size:13px;font-weight:700;align-items:center;justify-content:center;gap:16px}
+  #timeoutWarning button{background:rgba(0,0,0,.15);border:none;color:#1a1206;padding:5px 14px;border-radius:6px;cursor:pointer;font-weight:700;font-family:inherit}
+  .btn-logout{margin-inline-start:auto;background:transparent;border:1px solid #382b4d;color:#a99cc2;border-radius:8px;padding:7px 14px;font-size:12px;cursor:pointer;font-family:inherit;transition:.2s}
+  .btn-logout:hover{border-color:#f87171;color:#f87171}
+  header{position:relative}
+</style>
+</head>
+<body>
+
+<div id="timeoutWarning">
+  ⚠️ You'll be signed out in one minute due to inactivity
+  <button onclick="document.getElementById('timeoutWarning').style.display='none';document.dispatchEvent(new Event('mousemove'))">Dismiss</button>
+</div>
+
+<div id="mainApp">
+<header>
+  <div style="font-size:28px">📦</div>
+  <div>
+    <h1>Inventory <span>Comparison</span> Tool</h1>
+    <p>Fast — no waiting — all calculations run right in your browser</p>
+  </div>
+  <button class="btn-logout" onclick="doLogout()">🚪 Sign Out</button>
+</header>
+
+<div class="wrap">
+  <div class="upload-row">
+    <div class="dropzone" id="box-inv">
+      <div class="upload-click">
+        <input type="file" accept=".xlsx,.xls" onchange="loadFile('inv',this)">
+        <div class="ico">📊</div>
+        <h3>Stock Sheet (System)</h3>
+        <div class="sub">Any column layout — map the fields below</div>
+        <div class="fname" id="inv-lbl"></div>
+      </div>
+      <div class="map-panel" id="map-inv">
+        <div class="map-title">🧩 Confirm columns</div>
+        <div class="map-row"><label>Code / ID</label><select id="sel-iId"></select></div>
+        <div class="map-row"><label>Product Name</label><select id="sel-iName"></select></div>
+        <div class="map-row"><label>Location</label><select id="sel-iLoc"></select></div>
+        <div class="map-row"><label>Quantity</label><select id="sel-iQty"></select></div>
+        <div class="map-row"><label>Lot/Serial</label><select id="sel-iLot"><option value="">(none)</option></select></div>
+        <div class="map-hint">Auto-detected — change any field if it looks wrong</div>
+      </div>
+    </div>
+    <div class="dropzone" id="box-jard">
+      <div class="upload-click">
+        <input type="file" accept=".xlsx,.xls" onchange="loadFile('jard',this)">
+        <div class="ico">📋</div>
+        <h3>Physical Count Sheet</h3>
+        <div class="sub">Any column layout — map the fields below</div>
+        <div class="fname" id="jard-lbl"></div>
+      </div>
+      <div class="map-panel" id="map-jard">
+        <div class="map-title">🧩 Confirm columns</div>
+        <div class="map-row"><label>Code / ID</label><select id="sel-jId"></select></div>
+        <div class="map-row"><label>Product Name</label><select id="sel-jName"></select></div>
+        <div class="map-row"><label>Location</label><select id="sel-jLoc"></select></div>
+        <div class="map-row"><label>Quantity</label><select id="sel-jQty"></select></div>
+        <div class="map-row"><label>Barcode</label><select id="sel-jBarcode"><option value="">(none)</option></select></div>
+        <div class="map-hint">Auto-detected — change any field if it looks wrong</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="err" style="display: none;"></div>
+  <button class="run-btn" id="run-btn" onclick="run()" disabled>⚡ Calculate Comparison</button>
+  <div class="run-time" id="run-time"></div>
+
+  <div id="out" style="display: none;">
+    <div class="cards">
+      <div class="card c-total">  <div class="num" id="c0">0</div><div class="lbl">Total Counted</div></div>
+      <div class="card c-match">  <div class="num" id="c1">0</div><div class="lbl">✅ Match</div></div>
+      <div class="card c-deficit"><div class="num" id="c2">0</div><div class="lbl">🔴 Deficit</div></div>
+      <div class="card c-surplus"><div class="num" id="c3">0</div><div class="lbl">🟡 Surplus</div></div>
+      <div class="card c-loc">    <div class="num" id="c4">0</div><div class="lbl">🟣 Location Diff</div></div>
+      <div class="card c-acc">    <div class="num" id="c5">0%</div><div class="lbl">🎯 Count Accuracy</div></div>
+    </div>
+
+    <div class="notcounted-banner" id="nc-banner">
+      ⚠️ <span id="nc-text">0 items not counted yet</span>
+    </div>
+
+    <div class="tabs">
+      <button class="tab on-all" onclick="setTab('all',this)">All</button>
+      <button class="tab" onclick="setTab('Match',this)">Match</button>
+      <button class="tab" onclick="setTab('Deficit',this)">Deficit</button>
+      <button class="tab" onclick="setTab('Surplus',this)">Surplus</button>
+      <button class="tab" onclick="setTab('loc',this)">Location Diff</button>
+      <button class="tab" onclick="setTab('nc',this)">Not Counted</button>
+      <button class="tab" onclick="setTab('history',this)">🕑 History</button>
+    </div>
+
+    <div class="toolbar">
+      <input id="srch" placeholder="🔍 Search by name, location, or code..." oninput="render()">
+      <button class="dl-btn" onclick="exportExcel()">📥 Download Excel</button>
+      <button class="dl-btn dl-btn-pdf" onclick="exportPDF()">📄 Download PDF</button>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead id="thead"><tr>
+    <th>#</th><th>Code</th><th>Item Name</th><th>System Qty</th><th>Counted Qty</th><th>Diff</th><th>Status</th><th>Transfer Suggestion</th>
+  </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div class="empty" id="empty" style="display:none"><div class="ico">🔍</div><p>No results</p></div>
+    </div>
+  </div>
+
+  <div class="empty" id="init" style="display: block;">
+    <div class="ico">⬆️</div>
+    <p>Upload both sheets, then click "Calculate Comparison"</p>
+  </div>
+</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+let invRaw=null, jardRaw=null, allRows=[], notCountedRows=[], curTab='all';
+
+function loadFile(type, input){
+  const f=input.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    try{
+      const wb=XLSX.read(e.target.result,{type:'array'});
+      const data=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''});
+      if(!data.length){showErr('The file "'+f.name+'" appears to be empty');return;}
+      const headers=Object.keys(data[0]);
+
+      if(type==='inv'){
+        invRaw=data;
+        document.getElementById('inv-lbl').textContent=f.name;
+        document.getElementById('box-inv').classList.add('ok');
+        populateMapping('i', headers, {
+          iId:['internal.*ref','reference','^id$','code','sku','item.*code','part.*no'],
+          iName:['name','description','product','item.*name','title'],
+          iLoc:['location','warehouse','bin','zone','shelf','to$','dest'],
+          iQty:['^quantity$','qty','on.*hand','stock','balance','done','count'],
+          iLot:['lot.*serial','^lot$','^serial$','lot.*number','serial.*number']
+        });
+        document.getElementById('map-inv').classList.add('show');
+      } else {
+        jardRaw=data;
+        document.getElementById('jard-lbl').textContent=f.name;
+        document.getElementById('box-jard').classList.add('ok');
+        populateMapping('j', headers, {
+          jId:['^id$','code','internal.*ref','reference','sku','item.*code','part.*no'],
+          jName:['name','description','product','item.*name','title'],
+          jLoc:['location','warehouse','bin','zone','shelf','to$','dest'],
+          jQty:['^quantity$','qty','done','count','on.*hand'],
+          jBarcode:['barcode','ean','upc','serial']
+        });
+        document.getElementById('map-jard').classList.add('show');
+      }
+      document.getElementById('run-btn').disabled=!(invRaw&&jardRaw);
+    }catch(e){showErr('Error reading '+f.name);}
+  };
+  r.readAsArrayBuffer(f);
+}
+
+// Fill a set of <select> dropdowns with the sheet's headers, auto-picking
+// the best-guess column for each field based on name patterns.
+function populateMapping(prefix, headers, fieldPatterns){
+  for(const selId in fieldPatterns){
+    const sel=document.getElementById('sel-'+selId);
+    if(!sel)continue;
+    const keepBlank=selId.toLowerCase().includes('barcode')||selId.toLowerCase().includes('lot');
+    sel.innerHTML=(keepBlank?'<option value="">(none)</option>':'')+
+      headers.map(h=>`<option value="${h.replace(/"/g,'&quot;')}">${h}</option>`).join('');
+    const guess=guessColumn(headers, fieldPatterns[selId]);
+    if(guess) sel.value=guess;
+  }
+}
+
+function guessColumn(headers, patterns){
+  for(const p of patterns){
+    const k=headers.find(h=>new RegExp(p,'i').test(h));
+    if(k)return k;
+  }
+  return null;
+}
+
+function normId(v){
+  if(v===''||v==null)return null;
+  const s=String(v).trim();
+  if(/^#(N\/A|REF!|VALUE!|DIV\/0!|NAME\?|NULL!|NUM!|ERROR!)/i.test(s))return null;
+  const n=parseFloat(s.replace(/,/g,''));
+  return isNaN(n)?s:String(Math.round(n));
+}
+
+function buildTransferMoves(sLocs, cLocs, sKeys, cKeys){
+  const moves=[];
+  if(sKeys.length===1 && cKeys.length===1){
+    moves.push({from:sKeys[0], to:cKeys[0], qty:cLocs[cKeys[0]]});
+  } else if(sKeys.length>1 && cKeys.length===1){
+    sKeys.forEach(l=>moves.push({from:l, to:cKeys[0], qty:sLocs[l]}));
+  } else if(sKeys.length===1 && cKeys.length>1){
+    cKeys.forEach(l=>moves.push({from:sKeys[0], to:l, qty:cLocs[l]}));
+  } else {
+    let sIdx=0,cIdx=0;
+    let sRem=sLocs[sKeys[0]], cRem=cLocs[cKeys[0]];
+    while(sIdx<sKeys.length && cIdx<cKeys.length){
+      const mv=Math.min(sRem,cRem);
+      if(mv>0) moves.push({from:sKeys[sIdx], to:cKeys[cIdx], qty:mv});
+      sRem-=mv; cRem-=mv;
+      if(sRem<=0){sIdx++; if(sIdx<sKeys.length) sRem=sLocs[sKeys[sIdx]];}
+      if(cRem<=0){cIdx++; if(cIdx<cKeys.length) cRem=cLocs[cKeys[cIdx]];}
+    }
+  }
+  return moves;
+}
+
+// Tags each move with the specific system lot/serial it should draw from.
+// Lots at the move's `from` location are consumed in priority order (the
+// order they appear on the system sheet). A single move can span more than
+// one lot if it needs more than the first lot has available. A shared
+// pointer per location makes sure multiple moves drawing from the same
+// location don't double-spend the same lot quantity. Any quantity beyond
+// what the system's lots cover at that location is tagged "Unspecified"
+// (a new lot that needs to be created in Odoo).
+function splitMovesByLot(moves, lotsByLoc){
+  if(!lotsByLoc) return moves.map(m=>({...m, lot:''}));
+  const pointer={}; // location -> {idx, rem}
+  const result=[];
+  for(const m of moves){
+    const lots=lotsByLoc[m.from];
+    if(!lots || !lots.length){ result.push({...m, lot:''}); continue; }
+    if(!pointer[m.from]) pointer[m.from]={idx:0, rem:lots[0].qty};
+    const p=pointer[m.from];
+    let need=m.qty;
+    while(need>0 && p.idx<lots.length){
+      const take=Math.min(need, p.rem);
+      if(take>0){
+        result.push({from:m.from, to:m.to, qty:take, lot:lots[p.idx].lot});
+        need-=take; p.rem-=take;
+      }
+      if(p.rem<=0){
+        p.idx++;
+        if(p.idx<lots.length) p.rem=lots[p.idx].qty;
+      }
+    }
+    if(need>0){
+      result.push({from:m.from, to:m.to, qty:need, lot:'Unspecified'});
+    }
+  }
+  return result;
+}
+
+function run(){
+  const t0=performance.now();
+  showErr('');
+
+  const iId  =document.getElementById('sel-iId').value;
+  const iName=document.getElementById('sel-iName').value;
+  const iLoc =document.getElementById('sel-iLoc').value;
+  const iQty =document.getElementById('sel-iQty').value;
+  const iLot =document.getElementById('sel-iLot').value; // optional
+  const jId  =document.getElementById('sel-jId').value;
+  const jName=document.getElementById('sel-jName').value;
+  const jLoc =document.getElementById('sel-jLoc').value;
+  const jQty =document.getElementById('sel-jQty').value;
+  const jBarcode=document.getElementById('sel-jBarcode').value;
+
+  if(!iId||!iLoc||!iQty){showErr('Please confirm the Code, Location, and Quantity columns for the stock sheet');return;}
+  if(!jId||!jLoc||!jQty){showErr('Please confirm the Code, Location, and Quantity columns for the count sheet');return;}
+
+  const invByKey={}, invNames={}, invLocs={}, invLots={};
+  for(const r of invRaw){
+    const id=normId(r[iId]), loc=String(r[iLoc]||'').trim();
+    if(!id||!loc)continue;
+    const qty=parseFloat(r[iQty])||0;
+    const k=id+'||'+loc;
+    invByKey[k]=(invByKey[k]||0)+qty;
+    if(!invNames[id])invNames[id]=String(r[iName]||'').trim();
+    if(!invLocs[id])invLocs[id]={};
+    invLocs[id][loc]=(invLocs[id][loc]||0)+qty;
+    if(iLot){
+      const lot=String(r[iLot]||'').trim();
+      if(lot){
+        if(!invLots[id])invLots[id]={};
+        if(!invLots[id][loc])invLots[id][loc]=[];
+        invLots[id][loc].push({lot, qty});
+      }
+    }
+  }
+
+  if(Object.keys(invByKey).length===0){
+    showErr('No valid data found in the stock sheet');
+    return;
+  }
+
+  const countByKey={}, countNames={}, countLocs={}, noLocQty={}, countBarcodes={};
+  let skippedRows=0, emptyRows=0;
+
+  for(const r of jardRaw){
+    const barcode=String(r[jBarcode]||'').trim();
+    const id=normId(r[jId]), loc=String(r[jLoc]||'').trim();
+    const qty=parseFloat(r[jQty])||0;
+
+    if(!id){
+      if(barcode==='') emptyRows++;
+      else skippedRows++;
+      continue;
+    }
+    if(barcode && !countBarcodes[id]) countBarcodes[id]=barcode;
+    if(!loc){
+      if(!countNames[id])countNames[id]=String(r[jName]||'').trim();
+      noLocQty[id]=(noLocQty[id]||0)+qty;
+      continue;
+    }
+    const k=id+'||'+loc;
+    countByKey[k]=(countByKey[k]||0)+qty;
+    if(!countNames[id])countNames[id]=String(r[jName]||'').trim();
+    if(!countLocs[id])countLocs[id]={};
+    countLocs[id][loc]=(countLocs[id][loc]||0)+qty;
+  }
+
+  if(Object.keys(countByKey).length===0 && Object.keys(noLocQty).length===0){
+    showErr('No valid data found in the count sheet — check the ID column');
+    return;
+  }
+
+  const allIds=[...new Set([...Object.keys(countByKey).map(k=>k.split('||')[0]), ...Object.keys(noLocQty)])];
+  allRows=[];
+
+  for(const id of allIds){
+    const name=countNames[id]||invNames[id]||'';
+    const cLocs=countLocs[id]||{}, sLocs=invLocs[id]||{};
+    const cKeys=Object.keys(cLocs), sKeys=Object.keys(sLocs);
+    const extraNoLoc=noLocQty[id]||0;
+
+    let hasLocMismatch=false;
+    for(const cl of cKeys){ if(!sLocs[cl]){hasLocMismatch=true; break;} }
+
+    const totalC=Object.values(cLocs).reduce((a,b)=>a+b,0)+extraNoLoc;
+    const totalS=Object.values(sLocs).reduce((a,b)=>a+b,0);
+    const diff=totalC-totalS;
+    const status=diff>0?'Surplus':diff<0?'Deficit':'Match';
+
+    const row={id, name, barcode:countBarcodes[id]||'', sysQty:totalS, actQty:totalC, diff, status, moves:[], note:''};
+
+    if(hasLocMismatch){
+      if(diff>0) row.note='⚠️ Surplus of '+diff+' — add it in Odoo';
+      else if(diff<0) row.note='⚠️ Deficit of '+Math.abs(diff)+' — move to Cycle/Scrap';
+
+      if(sKeys.length===0){
+        if(cKeys.length>0) cKeys.forEach(l=>row.moves.push({from:'(new item)', to:l, qty:cLocs[l]}));
+        else row.moves.push({from:'(new item)', to:'—', qty:extraNoLoc});
+      } else {
+        row.moves=buildTransferMoves(sLocs,cLocs,sKeys,cKeys);
+      }
+      row.moves=splitMovesByLot(row.moves, invLots[id]);
+    }
+    allRows.push(row);
+  }
+
+  // Not counted: items in Inventory but not in allIds at all
+  const countedSet=new Set(allIds);
+  notCountedRows=Object.keys(invNames).filter(id=>!countedSet.has(id)).map(id=>({
+    id, name:invNames[id],
+    qty:Object.values(invLocs[id]||{}).reduce((a,b)=>a+b,0)
+  }));
+
+
+  const mat=allRows.filter(r=>r.status==='Match').length;
+  const def=allRows.filter(r=>r.status==='Deficit').length;
+  const sur=allRows.filter(r=>r.status==='Surplus').length;
+  const loc=allRows.filter(r=>r.moves.length>0).length;
+  const acc=allRows.length?Math.round(mat/allRows.length*100):0;
+
+  document.getElementById('c0').textContent=allRows.length;
+  document.getElementById('c1').textContent=mat;
+  document.getElementById('c2').textContent=def;
+  document.getElementById('c3').textContent=sur;
+  document.getElementById('c4').textContent=loc;
+  document.getElementById('c5').textContent=acc+'%';
+
+  const ncBanner=document.getElementById('nc-banner');
+  if(notCountedRows.length>0){
+    document.getElementById('nc-text').textContent=notCountedRows.length+' items have not been counted yet';
+    ncBanner.classList.add('show');
+  } else {
+    ncBanner.classList.remove('show');
+  }
+
+  curTab='all';
+  document.querySelectorAll('.tab').forEach(t=>t.className='tab');
+  document.querySelector('.tab').className='tab on-all';
+  document.getElementById('init').style.display='none';
+  document.getElementById('out').style.display='block';
+  render();
+
+  const elapsed=((performance.now()-t0)/1000).toFixed(2);
+  document.getElementById('run-time').innerHTML='Calculated in <b>'+elapsed+'</b> seconds';
+
+  let toastMsg='✅ Done — Match: '+mat+' | Deficit: '+def+' | Surplus: '+sur+' | Location Diff: '+loc;
+  if(skippedRows>0) toastMsg+=' | ⚠️ '+skippedRows+' rows had a barcode with no ID';
+  showToast(toastMsg);
+
+  window.saveHistoryEntry({
+    dateLabel: new Date().toLocaleString('en-US',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}),
+    invFileName: document.getElementById('inv-lbl').textContent||'',
+    jardFileName: document.getElementById('jard-lbl').textContent||'',
+    total: allRows.length, match: mat, deficit: def, surplus: sur, locDiff: loc, accuracy: acc
+  });
+}
+
+function setTab(t,btn){
+  curTab=t;
+  document.querySelectorAll('.tab').forEach(b=>b.className='tab');
+  const cls=t==='all'?'on-all':t==='Deficit'?'on-deficit':t==='Surplus'?'on-surplus':t==='Match'?'on-match':t==='nc'?'on-nc':t==='history'?'on-history':'on-loc';
+  btn.className='tab '+cls;
+  render();
+}
+
+function render(){
+  const srch=(document.getElementById('srch').value||'').toLowerCase();
+
+  if(curTab==='history'){
+    renderHistory();
+    return;
+  }
+
+  if(curTab==='nc'){
+    document.getElementById('thead').innerHTML=`<tr><th>#</th><th>Item Code</th><th>Item Name</th><th>System Qty</th></tr>`;
+    let rows=notCountedRows;
+    if(srch) rows=rows.filter(r=>r.name.toLowerCase().includes(srch)||r.id.includes(srch));
+    const tbody=document.getElementById('tbody'), empty=document.getElementById('empty');
+    if(!rows.length){tbody.innerHTML='';empty.style.display='block';return;}
+    empty.style.display='none';
+    tbody.innerHTML=rows.map((r,i)=>`<tr class="row-loc">
+      <td>${i+1}</td><td>${r.id}</td><td class="name-col">${r.name}</td><td>${Math.round(r.qty)}</td>
+    </tr>`).join('');
+    return;
+  }
+
+  document.getElementById('thead').innerHTML=`<tr>
+    <th>#</th><th>Code</th><th>Item Name</th><th>System Qty</th><th>Counted Qty</th><th>Diff</th><th>Status</th><th>Transfer Suggestion</th>
+  </tr>`;
+
+  let filtered=allRows;
+  if(curTab==='loc') filtered=filtered.filter(r=>r.moves.length>0);
+  else if(curTab!=='all') filtered=filtered.filter(r=>r.status===curTab);
+  if(srch) filtered=filtered.filter(r=>r.name.toLowerCase().includes(srch)||r.id.includes(srch)||
+    r.moves.some(m=>m.from.toLowerCase().includes(srch)||m.to.toLowerCase().includes(srch)));
+
+  const empty=document.getElementById('empty'), tbody=document.getElementById('tbody');
+  if(!filtered.length){tbody.innerHTML='';empty.style.display='block';return;}
+  empty.style.display='none';
+
+  tbody.innerHTML=filtered.map((r,i)=>{
+    const bc=r.status==='Match'?'b-match':r.status==='Deficit'?'b-deficit':'b-surplus';
+    const rowCls=r.status==='Match'?'row-match':r.status==='Deficit'?'row-deficit':r.status==='Surplus'?'row-surplus':'';
+    const dc=r.diff>0?'diff-p':r.diff<0?'diff-n':'diff-z';
+    const dv=r.diff>0?'+'+Math.round(r.diff):Math.round(r.diff);
+
+    let movesHtml='—';
+    if(r.moves.length>0){
+      movesHtml=r.moves.map(m=>`${m.from} → ${m.to} (${Math.round(m.qty)})${m.lot?' <span style="color:#c084fc">[Lot: '+m.lot+']</span>':''}`).join('<br>');
+      if(r.note) movesHtml+='<br><span class="note-warn">'+r.note+'</span>';
+    }
+
+    return `<tr class="${rowCls}">
+      <td>${i+1}</td>
+      <td>${r.id}</td>
+      <td class="name-col">${r.name}</td>
+      <td>${Math.round(r.sysQty)}</td>
+      <td>${Math.round(r.actQty)}</td>
+      <td class="${dc}">${dv}</td>
+      <td><span class="badge ${bc}">${r.status}</span></td>
+      <td class="note-col">${movesHtml}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function renderHistory(){
+  document.getElementById('thead').innerHTML=`<tr>
+    <th>#</th><th>Date</th><th>Files</th><th>Total</th><th>Match</th><th>Deficit</th><th>Surplus</th><th>Loc Diff</th><th>Accuracy</th><th></th>
+  </tr>`;
+  const tbody=document.getElementById('tbody'), empty=document.getElementById('empty');
+  tbody.innerHTML=`<tr><td colspan="10" style="text-align:center;padding:30px;color:#8b7fa3">Loading history...</td></tr>`;
+  empty.style.display='none';
+
+  const entries=await window.loadHistoryEntries();
+  if(curTab!=='history') return; // user switched tabs while loading
+
+  if(!entries.length){
+    tbody.innerHTML='';
+    empty.style.display='block';
+    document.getElementById('empty').innerHTML='<div class="ico">🕑</div><p>No saved history yet — run a comparison to save one automatically</p>';
+    return;
+  }
+
+  tbody.innerHTML=entries.map((e,i)=>`<tr>
+    <td>${i+1}</td>
+    <td>${e.dateLabel||''}</td>
+    <td class="name-col" style="font-size:11px">${(e.invFileName||'—')}<br>${(e.jardFileName||'—')}</td>
+    <td>${e.total??''}</td>
+    <td style="color:#4ade80">${e.match??''}</td>
+    <td style="color:#f87171">${e.deficit??''}</td>
+    <td style="color:#fbbf24">${e.surplus??''}</td>
+    <td style="color:#c084fc">${e.locDiff??''}</td>
+    <td>${e.accuracy!=null?e.accuracy+'%':''}</td>
+    <td><button onclick="removeHistoryEntry('${e.id}')" style="background:transparent;border:1px solid #ef4444;color:#f87171;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:inherit">Delete</button></td>
+  </tr>`).join('');
+}
+
+async function removeHistoryEntry(entryId){
+  if(!confirm('Delete this history entry? This cannot be undone.')) return;
+  const ok=await window.deleteHistoryEntry(entryId);
+  if(ok) renderHistory();
+  else showToast('⚠️ Could not delete — please try again');
+}
+
+function exportExcel(){
+  const wb=XLSX.utils.book_new();
+  const today=new Date().toISOString().slice(0,10);
+
+  const d=[['Item Code','Barcode','Item Name','System Qty','Counted Qty','Diff','Status'],
+    ...allRows.map(r=>[r.id,r.barcode||'',r.name,Math.round(r.sysQty),Math.round(r.actQty),Math.round(r.diff),r.status])];
+  const wsResult=XLSX.utils.aoa_to_sheet(d);
+  wsResult['!cols']=[{wch:15},{wch:18},{wch:35},{wch:12},{wch:12},{wch:10},{wch:12}];
+  XLSX.utils.book_append_sheet(wb,wsResult,'Result');
+
+  const locOnly=allRows.filter(r=>r.moves.length>0);
+  if(locOnly.length){
+    const l=[['Item Code','Item Name','From','To','Qty','Lot/Serial Number','Note']];
+    locOnly.forEach(r=>{
+      r.moves.forEach((m,idx)=>{
+        l.push([r.id, r.name, m.from, m.to, Math.round(m.qty), m.lot||'', idx===0?r.note:'']);
+      });
+    });
+    const wsLoc=XLSX.utils.aoa_to_sheet(l);
+    wsLoc['!cols']=[{wch:15},{wch:35},{wch:35},{wch:35},{wch:10},{wch:22},{wch:30}];
+    XLSX.utils.book_append_sheet(wb,wsLoc,'Location Diff');
+  }
+
+  if(notCountedRows.length){
+    const nc=[['Item Code','Item Name','System Qty'],
+      ...notCountedRows.map(r=>[r.id,r.name,Math.round(r.qty)])];
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(nc),'Not Counted');
+  }
+
+  const mat=allRows.filter(r=>r.status==='Match').length;
+  const def=allRows.filter(r=>r.status==='Deficit').length;
+  const sur=allRows.filter(r=>r.status==='Surplus').length;
+  const loc=allRows.filter(r=>r.moves.length>0).length;
+  const acc=allRows.length?Math.round(mat/allRows.length*100):0;
+  const s=[['Metric','Value'],['Total Items',allRows.length],['Match',mat],['Deficit',def],
+    ['Surplus',sur],['Location Diff',loc],['Count Accuracy %',acc+'%'],['Items Not Counted',notCountedRows.length]];
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(s),'Summary');
+
+  XLSX.writeFile(wb,`inventory_result_${today}.xlsx`);
+}
+
+function exportPDF(){
+  if(!allRows.length){ showErr('Run the comparison first'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'pt', format:'a4'});
+
+  const now=new Date();
+  const dateStr=now.toLocaleString('en-US',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.setTextColor(20,20,20);
+  doc.text('Inventory Comparison Report', 40, 50);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(10);
+  doc.setTextColor(120,120,120);
+  doc.text('Generated '+dateStr, 40, 68);
+
+  const mat=allRows.filter(r=>r.status==='Match').length;
+  const def=allRows.filter(r=>r.status==='Deficit').length;
+  const sur=allRows.filter(r=>r.status==='Surplus').length;
+  const loc=allRows.filter(r=>r.moves.length>0).length;
+  const acc=allRows.length?Math.round(mat/allRows.length*100):0;
+
+  const cards=[
+    {label:'Total items', value:String(allRows.length), color:[110,110,120]},
+    {label:'Match', value:String(mat), color:[34,197,94]},
+    {label:'Deficit', value:String(def), color:[239,68,68]},
+    {label:'Surplus', value:String(sur), color:[245,158,11]},
+    {label:'Location diff', value:String(loc), color:[168,85,247]},
+    {label:'Accuracy', value:acc+'%', color:[124,58,237]}
+  ];
+
+  const startX=40, startY=88, cardW=78, cardH=56, gap=8;
+  cards.forEach((c,i)=>{
+    const x=startX+i*(cardW+gap);
+    doc.setFillColor(c.color[0],c.color[1],c.color[2]);
+    doc.roundedRect(x, startY, cardW, cardH, 6, 6, 'F');
+    doc.setTextColor(255,255,255);
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(16);
+    doc.text(c.value, x+cardW/2, startY+30, {align:'center'});
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(8);
+    doc.text(c.label, x+cardW/2, startY+44, {align:'center'});
+  });
+
+  doc.setTextColor(80,80,80);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(11);
+  doc.text('Top 10 deficit and surplus items', 40, startY+cardH+30);
+
+  const top=allRows.filter(r=>r.diff!==0)
+    .sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff))
+    .slice(0,10);
+
+  doc.autoTable({
+    startY: startY+cardH+40,
+    head: [['Code','Name','System','Counted','Diff','Status']],
+    body: top.length ? top.map(r=>[r.id, r.name, Math.round(r.sysQty), Math.round(r.actQty), (r.diff>0?'+':'')+Math.round(r.diff), r.status]) : [['—','No deficit or surplus items','—','—','—','—']],
+    theme:'grid',
+    headStyles:{fillColor:[36,25,51], textColor:255, fontSize:9},
+    bodyStyles:{fontSize:8.5},
+    margin:{left:40,right:40}
+  });
+
+  const d=new Date(), ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  doc.save(`inventory_report_${ds}.pdf`);
+}
+
+function showErr(msg){
+  const e=document.getElementById('err');
+  e.textContent=msg?'⚠️ '+msg:'';
+  e.style.display=msg?'block':'none';
+}
+
+function showToast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 6000);
+}
+</script>
+
+
+</body></html>
